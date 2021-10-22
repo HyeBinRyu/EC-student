@@ -376,6 +376,12 @@ void sevensegment_init(void){
 
 ##### void sevensegment_decode(uint8_t num)
 
+```
+
+```
+
+
+
 ```cpp
 int SegPin[8] = {PIN_A, PIN_B, PIN_C, PIN_D, PIN_E, PIN_F, PIN_G, PIN_DP}; 
 GPIO_TypeDef* SegGPIO[8] = {GPIOA, GPIOA, GPIOA, GPIOB, GPIOC, GPIOA, GPIOA, GPIOB};
@@ -398,5 +404,407 @@ void sevensegment_decode(uint8_t num){
 	  GPIO_write(SegGPIO[i], SegPin[i], SegTable[num][i]);
 	}
 }  
+```
+
+## EXTI & SysTick
+
+### LED Toggle with EXTI Button 	
+
+```c
+void setup(void){
+	RCC_HSI_init();
+	GPIO_init(GPIOA, LED_PIN, OUTPUT);
+	//GPIO_otype(GPIOA, LED_PIN, PUSHPULL);
+	//GPIO_pudr(GPIOA, LED_PIN, NOPULLUPDOWN);
+	GPIO_init(GPIOC, BUTTON_PIN, INPUT);
+	GPIO_pudr(GPIOC, BUTTON_PIN, PULLDOWN);
+
+	EXTI_init(GPIOC, BUTTON_PIN, FALL ,0);
+}
+```
+
+
+```c
+void EXTI15_10_IRQHandler(void){
+	if(is_pending_EXTI(BUTTON_PIN)){
+		LED_toggle(GPIOA, LED_PIN);
+		clear_pending_EXTI(BUTTON_PIN); // cleared by writing '1'
+	}
+}
+
+int main(void){
+	// Initialization
+	setup();
+	// Infinite loop
+	while(1){}
+}
+```
+
+`ecEXTI.c`
+
+```c
+#include "stm32f411xe.h"
+#include "ecRCC.h"
+#include "ecGPIO.h"
+#include "ecEXTI.h"
+
+void EXTI_init(GPIO_TypeDef *port, int pin, int trig_type, int priority){
+	// SYSCFG peripheral clock enable
+	RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN ;
+	int share     = pin/4;
+	int remainder = pin%4;
+	int value = 0;
+	// Button: PC_13 -> EXTICR3(EXTI13)
+	SYSCFG->EXTICR[share] &= ~(15 <<((pin%4)*4)); //~15<<4
+	if     (port == GPIOA) value = 0; //13pin is at EXTICR4
+	else if(port == GPIOB) value = 1;
+	else if(port == GPIOC) value = 2;
+	else if(port == GPIOD) value = 3;
+	else if(port == GPIOE) value = 4;
+	else if(port == GPIOH) value = 7;
+	SYSCFG->EXTICR[share] |= value <<((remainder)*4); 
+	// Falling trigger enable (Button: pull-up)
+	if(trig_type == FALL)      EXTI->FTSR |= 1<<pin;
+	else if(trig_type == RISE) EXTI->RTSR |= 1<<pin;
+	
+	EXTI_enable(pin);
+	
+	// Interrupt IRQn, Priority
+	uint32_t EXTI_IRQx;
+	if (pin<5)	EXTI_IRQx = pin + 6;
+	else if (pin < 10) EXTI_IRQx = 23;
+	else if (pin < 16) EXTI_IRQx = 40;
+	
+	NVIC_SetPriority(EXTI_IRQx, priority);  		// Set EXTI priority as 0	
+	NVIC_EnableIRQ(EXTI_IRQx); 			// Enable EXTI 
+
+
+}
+
+void EXTI_enable(uint32_t pin){
+	EXTI->IMR |= 1<<pin ;	
+} // mask in IMR
+
+void EXTI_disable(uint32_t pin){
+	EXTI->IMR &= ~(1<<pin) ;
+} // umask in IMR
+
+uint32_t is_pending_EXTI(uint32_t pin){
+	if((EXTI->PR & (0x1UL << pin)) == (0x1UL <<pin)) return 1;
+	else return 0;
+}
+
+void clear_pending_EXTI(uint32_t pin){
+	EXTI->PR |= 0x1UL << pin;
+}
+
+
+```
+
+`ecEXTI.h`
+
+```c
+#include "stm32f411xe.h"
+#include "ecRCC.h"
+#include "ecGPIO.h"
+
+#ifndef __ECEXTI_H
+#define __ECEXTI_H
+
+#define FALL		0
+#define RISE		1
+
+#ifdef __cplusplus
+ extern "C" {
+#endif /* __cplusplus */
+
+void EXTI_init(GPIO_TypeDef *port, int pin, int trig_type, int priority);
+void EXTI_enable(uint32_t pin); // mask in IMR
+void EXTI_disable(uint32_t pin); // umask in IMR
+uint32_t is_pending_EXTI(uint32_t pin);
+void clear_pending_EXTI(uint32_t pin);
+
+ 
+#ifdef __cplusplus
+}
+#endif /* __cplusplus */
+
+#endif
+```
+
+
+
+### 7 Segment Display with EXTI Button
+
+```c
+void setup(void)
+{
+	RCC_PLL_init();
+	SysTick_init();
+	sevensegment_init();
+}
+
+int main(void){
+	// Initialization 
+	setup();
+	// Infinite Loop  
+	while(1){
+		sevensegment_decode(count);
+		delay_ms(1000UL);
+		count++;
+		if(count >10UL) count = 0UL;
+		//SysTick_reset();
+	}
+}
+```
+
+```c
+#include "stm32f411xe.h"
+#include "ecRCC.h"
+#include "ecGPIO.h"
+#include "ecEXTI.h"
+
+void EXTI_init(GPIO_TypeDef *port, int pin, int trig_type, int priority){
+	// SYSCFG peripheral clock enable
+	RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN ;
+	int share     = pin/4;
+	int remainder = pin%4;
+	int value = 0;
+	// Button: PC_13 -> EXTICR3(EXTI13)
+	SYSCFG->EXTICR[share] &= ~(15 <<((pin%4)*4)); //~15<<4
+	if     (port == GPIOA) value = 0; //13pin is at EXTICR4
+	else if(port == GPIOB) value = 1;
+	else if(port == GPIOC) value = 2;
+	else if(port == GPIOD) value = 3;
+	else if(port == GPIOE) value = 4;
+	else if(port == GPIOH) value = 7;
+	SYSCFG->EXTICR[share] |= value <<((remainder)*4); 
+	// Falling trigger enable (Button: pull-up)
+	if(trig_type == FALL)      EXTI->FTSR |= 1<<pin;
+	else if(trig_type == RISE) EXTI->RTSR |= 1<<pin;
+	
+	EXTI_enable(pin);
+	
+	// Interrupt IRQn, Priority
+	uint32_t EXTI_IRQx;
+	if (pin<5)	EXTI_IRQx = pin + 6;
+	else if (pin < 10) EXTI_IRQx = 23;
+	else if (pin < 16) EXTI_IRQx = 40;
+	
+	NVIC_SetPriority(EXTI_IRQx, priority);  		// Set EXTI priority as 0	
+	NVIC_EnableIRQ(EXTI_IRQx); 			// Enable EXTI 
+
+
+}
+
+void EXTI_enable(uint32_t pin){
+	EXTI->IMR |= 1<<pin ;	
+} // mask in IMR
+
+void EXTI_disable(uint32_t pin){
+	EXTI->IMR &= ~(1<<pin) ;
+} // umask in IMR
+
+uint32_t is_pending_EXTI(uint32_t pin){
+	if((EXTI->PR & (0x1UL << pin)) == (0x1UL <<pin)) return 1;
+	else return 0;
+}
+
+void clear_pending_EXTI(uint32_t pin){
+	EXTI->PR |= 0x1UL << pin;
+}
+
+
+```
+
+`ecSysTick.c`
+
+```c
+#include "stm32f411xe.h"
+#include "ecRCC.h"
+#include "ecGPIO.h"
+#include "ecEXTI.h"
+#include "ecSysTick.h"
+void SysTick_init(){
+	// SysTick Initialiization ------------------------------------------------------				
+	//  SysTick Control and Status Register
+	SysTick->CTRL = 0;				// Disable SysTick IRQ and SysTick Counter
+
+	// Select processor clock
+	// 1 = processor clock;  0 = external clock
+	SysTick->CTRL |= 1<<2;  
+
+	// uint32_t MCU_CLK=EC_SYSTEM_CLK
+	// SysTick Reload Value Register
+	SysTick->LOAD = (0.001 * MCU_CLK_PLL) - 1; 				// ticks period i want 1ms
+
+	// Clear SysTick Current Value 
+	SysTick->VAL = 0;
+
+	// Enables SysTick exception request
+	// 1 = counting down to zero asserts the SysTick exception request
+	SysTick->CTRL |= 1<<1;
+		
+	// Enable SysTick IRQ and SysTick Timer
+	SysTick->CTRL |= 1;
+		
+	NVIC_SetPriority(SysTick_IRQn, 16);		// Set Priority to 1
+	NVIC_EnableIRQ(SysTick_IRQn);			// Enable interrupt in NVIC
+}
+
+void delay_ms(uint32_t num){
+	uint32_t msTicks = 0;
+	while(1){
+		uint32_t curTicks = msTicks;
+		while((msTicks - curTicks) < num);
+		msTicks = 0;
+	}
+	
+void SysTick_reset(void){
+	if(GPIO_read(GPIOA, BUTTON_PIN) == 0) count = 0UL;
+}
+```
+
+`ecSysTick.h`
+
+```c
+#include "stm32f411xe.h"
+#include "ecRCC.h"
+#include "ecGPIO.h"
+
+#ifndef __ECSYSTICK_H
+#define __ECSYSTICK_H
+
+#define FALL		0
+#define RISE		1
+
+#define MCU_CLK_PLL 84000000
+#define MCU_CLK_HSI 16000000
+
+#ifdef __cplusplus
+ extern "C" {
+#endif /* __cplusplus */
+
+void SysTick_init(void); 
+void delay_ms(uint32_t num);
+void SysTick_reset(void);
+
+#ifdef __cplusplus
+} 
+#endif /* __cplusplus */
+
+#endif
+```
+
+###### myFunc.c
+
+```c
+#include "stm32f4xx.h"
+#include "stm32f411xe.h"
+#include "ecGPIO.h"
+#include "ecRCC.h"
+#include "myFunc.h"
+
+int SegPin[8] = {PIN_A, PIN_B, PIN_C, PIN_D, PIN_E, PIN_F, PIN_G, PIN_DP}; 
+GPIO_TypeDef* SegGPIO[8] = {GPIOA, GPIOA, GPIOA, GPIOB, GPIOC, GPIOA, GPIOA, GPIOB};
+
+int SegTable[10][8] = { 
+	{0, 0, 0, 0, 0, 0, 1,0},
+	{1, 0, 0, 1, 1, 1, 1,0},
+	{0, 0, 1, 0, 0, 1, 0,0},
+	{0, 0, 0, 0, 1, 1, 0,0},
+	{1, 0, 0, 1, 1, 0, 0,0},
+	{0, 1, 0, 0, 1, 0, 0,0},
+	{0, 1, 0, 0, 0, 0, 0,0},
+	{0, 0, 0, 1, 1, 1, 1,0},
+	{0, 0, 0, 0, 0, 0, 0,0},
+	{0, 0, 0, 0, 1, 0, 0,0}
+};
+
+void LED_toggle(GPIO_TypeDef* Port, int PIN){
+	Port->ODR ^= 1 << PIN;
+}
+
+void sevensegment_init(void){
+    GPIO_init(GPIOA, PIN_A, OUTPUT);    // calls RCC_GPIOA_enable()
+    GPIO_otype(GPIOA, PIN_A, PUSHPULL); // #define PIN_C    0x05
+    GPIO_pudr(GPIOA, PIN_A, NOPULLUPDOWN); 
+    //GPIO_ospeed(GPIOA, PIN_A, FASTSPEED);
+    
+    GPIO_init(GPIOA, PIN_B, OUTPUT);    // calls RCC_GPIOA_enable()
+    GPIO_otype(GPIOA, PIN_B, PUSHPULL); // #define PIN_D    0x06
+    GPIO_pudr(GPIOA, PIN_B, NOPULLUPDOWN); 
+    //GPIO_ospeed(GPIOA, PIN_B, FASTSPEED);
+   
+    GPIO_init(GPIOA, PIN_C, OUTPUT);    // calls RCC_GPIOA_enable()
+    GPIO_otype(GPIOA, PIN_C, PUSHPULL); // #define PIN_E    0x07
+    GPIO_pudr(GPIOA, PIN_C, NOPULLUPDOWN); 
+    //GPIO_ospeed(GPIOA, PIN_C, FASTSPEED);
+   
+    GPIO_init(GPIOB, PIN_D, OUTPUT);    // calls RCC_GPIOA_enable()
+    GPIO_otype(GPIOB, PIN_D, PUSHPULL); // #define PIN_A    0x09
+    GPIO_pudr(GPIOB, PIN_D, NOPULLUPDOWN); 
+    //GPIO_ospeed(GPIOB, PIN_D, FASTSPEED);
+    
+    GPIO_init(GPIOC, PIN_E, OUTPUT);    // calls RCC_GPIOA_enable()
+    GPIO_otype(GPIOC, PIN_E, PUSHPULL); // #define PIN_B    0x08
+    GPIO_pudr(GPIOC, PIN_E, NOPULLUPDOWN); 
+    //GPIO_ospeed(GPIOC, PIN_E, FASTSPEED);
+    
+    GPIO_init(GPIOA, PIN_F, OUTPUT);    // calls RCC_GPIOB_enable()
+    GPIO_otype(GPIOA, PIN_F, PUSHPULL); // #define PIN_G    0x06
+    GPIO_pudr(GPIOA, PIN_F, NOPULLUPDOWN); 
+    //GPIO_ospeed(GPIOA, PIN_F, FASTSPEED);
+    
+    GPIO_init(GPIOA, PIN_G, OUTPUT);    // calls RCC_GPIOB_enable()
+    GPIO_otype(GPIOA, PIN_G, PUSHPULL); // #define PIN_DP      0x10
+    GPIO_pudr(GPIOA, PIN_G, NOPULLUPDOWN); 
+    //GPIO_ospeed(GPIOA, PIN_G, FASTSPEED);
+    
+    GPIO_init(GPIOB, PIN_DP, OUTPUT);    // calls RCC_GPIOC_enable()
+    GPIO_otype(GPIOB, PIN_DP, PUSHPULL); // #define PIN_F    0x07
+    GPIO_pudr(GPIOB, PIN_DP, NOPULLUPDOWN); 
+    //GPIO_ospeed(GPIOB, PIN_DP, FASTSPEED);
+}
+
+void sevensegment_decode(uint8_t num){
+    for(int i = 0; i < 9; i++){
+					 GPIO_write(SegGPIO[i], SegPin[i], SegTable[num][i]);
+	  }
+}  
+
+```
+
+myFunc.h
+
+```c
+#include "stm32f411xe.h"
+#include "ecRCC.h"
+
+#ifndef __MYFUNC_H
+#define __MYFUNC_H
+
+#define PIN_A    0x05
+#define PIN_B    0x06
+#define PIN_C    0x07
+#define PIN_D    0x06
+#define PIN_E    0x07
+#define PIN_F    0x09
+#define PIN_G    0x08
+#define PIN_DP   0x10
+
+#ifdef __cplusplus
+ extern "C" {
+#endif /* __cplusplus */
+
+void LED_toggle(GPIO_TypeDef* Port, int PIN);
+void sevensegment_init(void);
+void sevensegment_decode(uint8_t num);
+#ifdef __cplusplus
+}
+#endif /* __cplusplus */
+
+#endif
+
 ```
 
