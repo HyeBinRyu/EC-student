@@ -1287,7 +1287,6 @@ int main(void){
 	
 	setup();
 	
-	
 	while(1){
 	  distance = (float) timeInterval/58*100; // Ultrasonic speed[m/s] * echo pulse duration[us]
 		printf("%f[mm]\r\n",distance);
@@ -1329,12 +1328,12 @@ void TIM2_IRQHandler(void){
 		clear_UIF(TIM2);  				  // clear update interrupt flag
 	}
 	if(is_CCIF(TIM2,3)){ 				  // TIM2_Ch3 (IC3) Capture Flag. Rising Edge Detect
-		timeSt = TIM2->CCR3;			  // Capture TimeStart from CC3
+		timeSt = TIM2->CCR3;			  // Capture TimeStart from CC3 : 값 읽어오기!
 		clear_CCIF(TIM2,3);               // clear capture/compare interrupt flag 
 	}								                      
 	else if(is_CCIF(TIM2,4)){ 			  // TIM2_Ch3 (IC4) Capture Flag. Falling Edge Detect
-		timeEnd = TIM2->CCR4;			  // Capture TimeEnd from CC4
-    timeInterval = ((timeEnd - timeSt)+(TIM2->ARR+1)*ovf_cnt*10); 		// Total time of echo pulse
+		timeEnd = TIM2->CCR4;			  // Capture TimeEnd from CC4 : 값 읽어오기!
+    	timeInterval = ((timeEnd - timeSt)+(TIM2->ARR+1)*ovf_cnt*10); 		// Total time of echo pulse
 		ovf_cnt = 0;                      // overflow reset
 		clear_CCIF(TIM2,4);				  // clear capture/compare interrupt flag
 	}
@@ -1349,7 +1348,7 @@ void TIM2_IRQHandler(void){
 #include "math.h"
 
 /* Input Capture  */
-
+// *** 캡처할 두 개의 변수 선언 ***
 void ICAP_init(IC_t *ICx, GPIO_TypeDef *port, int pin){
 // 0. Match Input Capture Port and Pin for TIMx
 	ICx->port = port;
@@ -1358,7 +1357,7 @@ void ICAP_init(IC_t *ICx, GPIO_TypeDef *port, int pin){
 	
 	TIM_TypeDef *TIMx = ICx->timer;
 	int TIn = ICx->ch; 		
-	int ICn=TIn;
+	int ICn = TIn;
 	ICx->ICnum=ICn;									// (default) TIx=ICx
 
 // GPIO configuration ---------------------------------------------------------------------	
@@ -1375,7 +1374,6 @@ void ICAP_init(IC_t *ICx, GPIO_TypeDef *port, int pin){
 	 if(pin<=7) port->AFR[0] = val<<(4*(pin%8));
 	 else if(pin<=15) port->AFR[1] = val<<(4*(pin%8));  
 
-	
 // TIMER configuration ---------------------------------------------------------------------			
 // 1. Initialize Timer 
 	TIM_init(TIMx, 1);
@@ -1403,7 +1401,8 @@ void ICAP_init(IC_t *ICx, GPIO_TypeDef *port, int pin){
 
 // 3. IC Prescaler (use default)
 // default is okay.
-
+	
+    // *** 엣지마다 반응할 수 있게 이네이블 ***
 // 4. Activation Edge: CCyNP/CCyP		
 	TIMx->CCER &= ~(5<<1);					// CCy(Rising) for ICn
 //TIMX -> CCER |= b1010 is also the answer.
@@ -1425,7 +1424,7 @@ void ICAP_init(IC_t *ICx, GPIO_TypeDef *port, int pin){
 // Configure Selecting TIx-ICy and Edge Type
 void ICAP_setup(IC_t *ICx, int ICn, int edge_type){
 	TIM_TypeDef *TIMx = ICx->timer;	        // TIMx
-	int 				CHn 	= ICx->ch;	// Timer Channel CHn
+	int 	    CHn   = ICx->ch;	// Timer Channel CHn
 	ICx->ICnum=ICn;
 	// *** 디스에이블 이따가 다시 이네이블 시킬거야~ ***
 // Disable  CC. Disable CCInterrupt for ICn. 
