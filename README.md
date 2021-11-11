@@ -1250,3 +1250,301 @@ void Stepper_stop (void);
 #endif
 ```
 
+### Timer InputCapture
+
+`LAB_TIMER_Inputcap_UltraSonic.c`
+
+```c
+/**
+******************************************************************************
+* @author  SSSLAB
+* @Mod		 2021-8-12 by YKKIM  	
+* @brief   Embedded Controller:  Tutorial ___
+*					 - _________________________________
+* 
+******************************************************************************
+*/
+
+
+#include "stm32f411xe.h"
+#include "math.h"
+#include "ecGPIO.h"
+#include "ecRCC.h"
+#include "ecTIM.h"
+#include "ecPWM.h"
+#include "ecUART_student.h"
+#include "ecSysTIck.h"
+
+uint32_t ovf_cnt = 0;
+float distance = 0;
+float timeInterval = 0;
+float timeSt = 0;
+float timeEnd= 0;
+
+void setup(void);
+// *** 초음파 센서로부터 거리출력 ***
+int main(void){
+	
+	setup();
+	
+	
+	while(1){
+	  distance = (float) timeInterval/58*100; // Ultrasonic speed[m/s] * echo pulse duration[us]
+		printf("%f[mm]\r\n",distance);
+		delay_ms(500);
+	}
+}
+
+// *** PWM trig 생성,  ***
+void setup(){
+
+	RCC_PLL_init(); 
+	SysTick_init(); % 시스틱을 켜줘야 TIM_IRQHandler가 실행된다.
+	UART2_init();
+  
+// PWM configuration ---------------------------------------------------------------------	
+	PWM_t trig;						// PWM1 for trig
+	PWM_init(&trig, GPIOA, 6);	    // PWM init as PA_6: Ultrasonic trig pulse
+	PWM_period_us(&trig,50000);    	// PWM of 50ms period. Use period_us()
+	PWM_pulsewidth_us(&trig,10);   	// PWM pulse width of 10us
+	
+// Input Capture configuration -----------------------------------------------------------------------	
+	IC_t echo;						// Input Capture for echo
+	ICAP_init(&echo, GPIOB, 10);    // ICAP init as PB10 as input caputre
+ 	ICAP_counter_us(&echo, 10);   	// ICAP counter step time as 10us
+	ICAP_setup(&echo, 3, RISE);   	// TIM2_CH3 as IC3 , rising edge detect
+	ICAP_setup(&echo, 4, FALL);     // TIM2_CH3 as IC4 , falling edge detect
+
+// Enable TIMx interrupt-----------------------------------------------------------------------	
+	TIM_INT_enable(TIM2);  			// TIM2 Interrupt Enable
+
+}
+```
+
+```c
+// ***  ***
+void TIM2_IRQHandler(void){
+	if(is_UIF(TIM2)){                     // Update interrupt
+		ovf_cnt++;  					  // overflow count
+		clear_UIF(TIM2);  				  // clear update interrupt flag
+	}
+	if(is_CCIF(TIM2,3)){ 				  // TIM2_Ch3 (IC3) Capture Flag. Rising Edge Detect
+		timeSt = TIM2->CCR3;			  // Capture TimeStart from CC3
+		clear_CCIF(TIM2,3);               // clear capture/compare interrupt flag 
+	}								                      
+	else if(is_CCIF(TIM2,4)){ 			  // TIM2_Ch3 (IC4) Capture Flag. Falling Edge Detect
+		timeEnd = TIM2->CCR4;			  // Capture TimeEnd from CC4
+    timeInterval = ((timeEnd - timeSt)+(TIM2->ARR+1)*ovf_cnt*10); 		// Total time of echo pulse
+		ovf_cnt = 0;                      // overflow reset
+		clear_CCIF(TIM2,4);				  // clear capture/compare interrupt flag
+	}
+}
+```
+
+`ecIC.c`
+
+```c
+#include "ecTIM.h"
+#include "ecGPIO.h"
+#include "math.h"
+
+/* Input Capture  */
+
+void ICAP_init(IC_t *ICx, GPIO_TypeDef *port, int pin){
+// 0. Match Input Capture Port and Pin for TIMx
+	ICx->port = port;
+	ICx->pin  = pin;
+	ICAP_pinmap(ICx);	  							// Port, Pin --(mapping)--> TIMx, Channel
+	
+	TIM_TypeDef *TIMx = ICx->timer;
+	int TIn = ICx->ch; 		
+	int ICn=TIn;
+	ICx->ICnum=ICn;									// (default) TIx=ICx
+
+// GPIO configuration ---------------------------------------------------------------------	
+// 1. Initialize GPIO port and pin as AF
+	GPIO_init(port, pin, AF);  						// GPIO init as AF=2
+	GPIO_ospeed(port, pin, 3);  					// speed VHIGH=3	
+
+// 2. Configure GPIO AFR by Pin num.
+	uint32_t val;
+	 if(TIMx==TIM1 ||TIMx==TIM2) val  = 0x0001;
+	 else if(TIMx==TIM3 ||TIMx==TIM4 ||TIMx==TIM5) val = 0x0002;
+	 else if(TIMx==TIM9 ||TIMx==TIM10 ||TIMx==TIM11) val = 0x0003;
+
+	 if(pin<=7) port->AFR[0] = val<<(4*(pin%8));
+	 else if(pin<=15) port->AFR[1] = val<<(4*(pin%8));  
+
+	
+// TIMER configuration ---------------------------------------------------------------------			
+// 1. Initialize Timer 
+	TIM_init(TIMx, 1);
+// 2. Initialize Timer Interrpt 
+	TIM_INT_init(TIMx, 1);        				// TIMx Interrupt initialize 
+	// *** Timer 설정에서 PSC, ARR 이거 설정하는 방법 다시 알아보기 ***
+// 3. Modify ARR Maxium for 1MHz
+	TIMx->PSC = 84-1;						  	// Timer counter clock: 1MHz(1us)  for PLL
+	TIMx->ARR = 0xFFFF;							// Set auto reload register to maximum (count up to 65535)
+// 4. Disable Counter during configuration
+	TIMx->CR1 &= ~TIM_CR1_CEN;  				// Disable Counter during configuration
+
+
+	
+// Input Capture configuration ---------------------------------------------------------------------			// *** 채널 별로 조건따라 설정해주면 될 듯 ***
+// 1. Select Timer channel(TIx) for Input Capture channel(ICx)
+	// Default Setting
+	TIMx->CCMR1 |= 	TIM_CCMR1_CC1S_0;      	//01<<0   CC1S    TI1=IC1
+	TIMx->CCMR1 |= 	TIM_CCMR1_CC2S_0;  		//01<<8   CC2s    TI2=IC2
+	TIMx->CCMR2 |= 	TIM_CCMR2_CC3S_0;       //01<<0   CC3s    TI3=IC3
+	TIMx->CCMR2 |= 	TIM_CCMR2_CC4S_0;  		//01<<8   CC4s    TI4=IC4
+
+
+// 2. Filter Duration (use default)
+
+// 3. IC Prescaler (use default)
+// default is okay.
+
+// 4. Activation Edge: CCyNP/CCyP		
+	TIMx->CCER &= ~(5<<1);					// CCy(Rising) for ICn
+//TIMX -> CCER |= b1010 is also the answer.
+//RISE: TIMX -> CCER &= ~b1010<<4*(ICn-1) is also the answer.
+//FALL: TIMX -> CCER |= b0010<<4*(ICn-1) is also the answer.
+//BOTH: TIMX -> CCER |= b1010<<4*(ICn-1) is also the answer.
+	// *** 아웃풋 이네이블 ***
+// 5.	Enable CCy Capture, Capture/Compare interrupt
+	TIMx->CCER |= 1 << 4*(ICn-1);			// CCn(ICn) Capture Enable	
+	// *** 캡처 인터럽트 이네이블 ***
+// 6.	Enable Interrupt of CC(CCyIE), Update (UIE)
+	TIMx->DIER |= 0x1UL << ICn;				// Capture/Compare Interrupt Enable	for ICn
+	TIMx->DIER |= TIM_DIER_UIE;				// Update Interrupt enable	
+
+// 7.	Enable Counter 
+	TIMx->CR1	 |= TIM_CR1_CEN;			// Counter enable	
+}
+
+// Configure Selecting TIx-ICy and Edge Type
+void ICAP_setup(IC_t *ICx, int ICn, int edge_type){
+	TIM_TypeDef *TIMx = ICx->timer;	        // TIMx
+	int 				CHn 	= ICx->ch;	// Timer Channel CHn
+	ICx->ICnum=ICn;
+	// *** 디스에이블 이따가 다시 이네이블 시킬거야~ ***
+// Disable  CC. Disable CCInterrupt for ICn. 
+	TIMx->CCER &= ~(1 << 4*(ICn-1));		// Capture Disable
+	TIMx->DIER &= ~(0x1UL << ICn);			// CCn Interrupt Disable	
+	
+	
+// Configure  IC number(user selected) with given IC pin(TIMx_CHn)
+	switch(ICn){
+			case 1:
+					TIMx->CCMR1 &= ~TIM_CCMR1_CC1S;						//reset   CC1S
+					if (ICn==CHn) TIMx->CCMR1 |= TIM_CCMR1_CC1S_0;      //01<<0   CC1S    Tx_Ch1=IC1
+					else TIMx->CCMR1 |= TIM_CCMR1_CC1S_1;      			//10<<0   CC1S    Tx_Ch2=IC1
+					break;
+			case 2:
+					TIMx->CCMR1 &= ~TIM_CCMR1_CC2S;						//reset   CC2S
+					if (ICn==CHn) TIMx->CCMR1  |= TIM_CCMR1_CC2S_0;     //01<<0   CC2S    Tx_Ch2=IC2
+					else TIMx->CCMR1  |= TIM_CCMR1_CC2S_1; 	    		//10<<0   CC2S    Tx_Ch1=IC2
+					break;
+			case 3:
+					TIMx->CCMR2 &= ~TIM_CCMR2_CC3S;						//reset   CC3S
+					if (ICn==CHn) TIMx->CCMR2  |= TIM_CCMR2_CC3S_0 ;	//01<<0   CC3S    Tx_Ch3=IC3
+					else TIMx->CCMR2  |= TIM_CCMR2_CC3S_1;		     	//10<<0   CC3S    Tx_Ch4=IC3
+					break;
+			case 4:
+					TIMx->CCMR2 &= ~TIM_CCMR2_CC4S;						//reset   CC4S
+					if (ICn==CHn) TIMx->CCMR2  |= TIM_CCMR2_CC4S_0;	    //01<<0   CC4S    Tx_Ch4=IC4
+					else TIMx->CCMR2  |= TIM_CCMR2_CC4S_1;	     		//10<<0   CC4S    Tx_Ch3=IC4
+					break;
+			default: break;
+		}
+
+	//*** 클리어 해주고 설정, 근데 설정에 따라 캡처가능한 상황이 달라지는 거 같은데 공부가 필요할 듯 ***
+// Configure Activation Edge direction
+	TIMx->CCER  &= ~(5 << (4*ICn+1));	  								// Clear CCnNP/CCnP bits for ICn
+	switch(edge_type){
+		case RISE: TIMx -> CCER &= ~0b1010<<4*(ICn-1); break;
+		case FALL: TIMx -> CCER |= 0b0010<<4*(ICn-1); break;
+    	case BOTH: TIMx -> CCER |= 0b1010<<4*(ICn-1); break;
+	}
+	
+// Enable CC. Enable CC Interrupt. 
+	TIMx->CCER |= 1 << (4*(ICn - 1)); 									// Capture Enable
+	TIMx->DIER |= 1 << ICn; 											// CCn Interrupt enabled	
+}
+
+ 
+// Time span for one counter step
+void ICAP_counter_us(IC_t *ICx, int usec){	
+	TIM_TypeDef *TIMx = ICx->timer;	
+	TIMx->PSC = 84*usec-1;						  // Timer counter clock: 1us * usec
+	TIMx->ARR = 0xFFFF;			 				  // Set auto reload register to maximum (count up to 65535)
+}
+
+uint32_t is_pending_TIM(TIM_TypeDef *TIMx){
+	return ((TIMx->SR & TIM_SR_UIF) == 1);	
+
+}
+
+void clear_pending_TIM(TIM_TypeDef *TIMx){	
+	TIM2->SR &= ~TIM_SR_UIF;
+}
+
+uint32_t is_CCIF(TIM_TypeDef *TIMx, uint32_t ccNum){
+	return (TIMx->SR & (1<<ccNum))!= 0; 			//KKok 1 e anilasu false ga aninji hwakinhaneunguya		
+}
+
+void clear_CCIF(TIM_TypeDef *TIMx, uint32_t ccNum){
+	TIMx->SR &= ~(1<<ccNum);	
+}
+
+//DO NOT MODIFY THIS
+void ICAP_pinmap(IC_t *timer_pin){
+   GPIO_TypeDef *port = timer_pin->port;
+   int pin = timer_pin->pin;
+   
+   if(port == GPIOA) {
+      switch(pin){
+         case 0 : timer_pin->timer = TIM2; timer_pin->ch = 1; break;
+         case 1 : timer_pin->timer = TIM2; timer_pin->ch = 2; break;
+         case 5 : timer_pin->timer = TIM2; timer_pin->ch = 1; break;
+         case 6 : timer_pin->timer = TIM3; timer_pin->ch = 1; break;
+         //case 7: timer_pin->timer = TIM1; timer_pin->ch = 1N; break;
+         case 8 : timer_pin->timer = TIM1; timer_pin->ch = 1; break;
+         case 9 : timer_pin->timer = TIM1; timer_pin->ch = 2; break;
+         case 10: timer_pin->timer = TIM1; timer_pin->ch = 3; break;
+         case 15: timer_pin->timer = TIM2; timer_pin->ch = 1; break;
+         default: break;
+      }         
+   }
+   else if(port == GPIOB) {
+      switch(pin){
+         //case 0: timer_pin->timer = TIM1; timer_pin->ch = 2N; break;
+         //case 1: timer_pin->timer = TIM1; timer_pin->ch = 3N; break;
+         case 3 : timer_pin->timer = TIM2; timer_pin->ch = 2; break;
+         case 4 : timer_pin->timer = TIM3; timer_pin->ch = 1; break;
+         case 5 : timer_pin->timer = TIM3; timer_pin->ch = 2; break;
+         case 6 : timer_pin->timer = TIM4; timer_pin->ch = 1; break;
+         case 7 : timer_pin->timer = TIM4; timer_pin->ch = 2; break;
+         case 8 : timer_pin->timer = TIM4; timer_pin->ch = 3; break;
+         case 9 : timer_pin->timer = TIM4; timer_pin->ch = 3; break;
+         case 10: timer_pin->timer = TIM2; timer_pin->ch = 3; break;
+         
+         default: break;
+      }
+   }
+   else if(port == GPIOC) {
+      switch(pin){
+         case 6 : timer_pin->timer = TIM3; timer_pin->ch = 1; break;
+         case 7 : timer_pin->timer = TIM3; timer_pin->ch = 2; break;
+         case 8 : timer_pin->timer = TIM3; timer_pin->ch = 3; break;
+         case 9 : timer_pin->timer = TIM3; timer_pin->ch = 4; break;
+         
+         default: break;
+      }
+   }
+}
+```
+
+ADC
+
+- Prescaler : ADC->CCR &= ~(3<<16);	//0000: PCLK2 divided by 2	(42MHz) 얘가 분모로 들어가서 sampling time 을 구하게 됨.
