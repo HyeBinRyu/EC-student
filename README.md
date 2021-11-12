@@ -1633,7 +1633,7 @@ void ADC_init(GPIO_TypeDef *port, int pin, int trigmode){  //mode 0 : SW, 1 : TR
 	GPIO_init(port, pin, ANALOG);  				// ANALOG = 3
 	GPIO_pudr(port, pin, NOPULLUPDOWN);  		// EC_NONE = 0
 
-// ADC configuration	---------------------------------------------------------------------			
+// ADC configuration  ---------------------------------------------------------------------			
 // 1. Total time of conversion setting
 	// Enable ADC pheripheral clock
 	RCC->APB2ENR  |= (1<<8); 		// Enable the clock of RCC_APB2ENR_ADC1EN
@@ -1653,7 +1653,7 @@ void ADC_init(GPIO_TypeDef *port, int pin, int trigmode){  //mode 0 : SW, 1 : TR
 		ADC1->SMPR2  |= 4U << 3*(CHn);					
 	} // sampling time conversion : 84  			
 	else{
-		//ADC1->SMPR1	 &= ~(15U << 3*(CHn - 10));
+		//ADC1->SMPR1 &= ~(15U << 3*(CHn - 10));
 		ADC1->SMPR1  |= 4U << 3*(CHn - 10);
 	}				 
 	
@@ -1796,7 +1796,7 @@ uint32_t is_ADC_EOC(ADC_TypeDef *ADCx){ //ADC->DR가서 읽을 때가 됐다는 
 	}else return 0;
 }
 
-uint32_t is_ADC_OVR(void){
+uint32_t is_ADC_OVR(void){ // IR1, IR2을 한 번 받으면 여기가 1이 된다. 지속적으로 clear 을 해줘야한다.
 	return (ADC1->SR & (ADC_SR_OVR)==ADC_SR_OVR);
 }
 
@@ -1831,4 +1831,8 @@ uint32_t ADC_pinmap(GPIO_TypeDef *Port, int Pin){ // ADC_init()에서 호출됨!
 }
 
 ```
+
+![image-20211112232528048](C:\Users\elite\AppData\Roaming\Typora\typora-user-images\image-20211112232528048.png)
+
+HW trigger로 TIM을 쓴 경우, CONT가 아닌 SINGLE로 해야한다!!
 
