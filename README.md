@@ -1547,3 +1547,288 @@ void ICAP_pinmap(IC_t *timer_pin){
 ADC
 
 - Prescaler : ADC->CCR &= ~(3<<16);	//0000: PCLK2 divided by 2	(42MHz) 얘가 분모로 들어가서 sampling time 을 구하게 됨.
+
+### ADC IR sensor (Regular & HW trigger)
+
+`LAB_ADC_IRSensor`
+
+```c
+/**
+******************************************************************************
+* @author  SSSLAB
+* @Mod		 2021-8-12 by YKKIM  	
+* @brief   Embedded Controller:  Tutorial ___
+*					 - _________________________________
+* 
+******************************************************************************
+*/
+
+#include "myFunc.h"
+//IR parameter//
+float result_v =0;
+int IR1 =0, IR2 = 0; 	// 데이터 받는 변수, 이번에는 두 개를 받아서 2개다.
+int flag = 0;			// 어떤 데이터인지 분간하게 하는 플레그
+void setup(void);		
+void ADC_IRQHandler(void);	
+
+seq[2] = {8,9}; // chogihwa below code will apply this variable automatically // GPIO핀이 반환하는 채널
+int main(void) { 
+	// Initialiization --------------------------------------------------------
+	setup();
+
+	ADC_sequence(2, seq); // ADC_Sequence(length, *seq)
+	ADC_start();
+	// Inifinite Loop ----------------------------------------------------------
+	while(1){
+		printf("IR1 = %d\r\n",IR1);
+		if(IR1 >= 3000) printf("GO LEFT\r\n");
+		else if(IR2 >= 3000) printf("GO RIGHT\r\n");
+		printf("IR2 = %d\r\n",IR2);
+		printf("\r\n");
+		delay_ms(1000);	// 1초마다 출력
+	}
+}
+
+// Initialiization 
+void setup(void)
+{	
+	RCC_PLL_init();                         // System Clock = 84MHz
+	SysTick_init();							// 이걸 써야 External trigger가 작동함..!, RCC다음에 ADC전에 선언!!
+	UART2_init();
+	ADC_init(GPIOB,0,TRGO);
+	ADC_init(GPIOB,1,TRGO); // ->ADC_TRGO is linked to this function, 타이퍼랑 polarity는 써줘야됨!
+	
+}
+
+void ADC_IRQHandler(void){
+	if(is_ADC_OVR()) clear_ADC_OVR();
+	if(is_ADC_EOC(ADC1)){       //after finishing sequence
+		flag++;
+		if(flag%2 == 1) IR1 = ADC_read();
+		else if(flag%2 == 0) IR2 = ADC_read();
+	// flag => whether it is IR1 or IR2
+  }
+}
+
+```
+
+`ecADC.c`
+
+```c
+#include "stm32f411xe.h"
+#include "ecSysTick.h"
+#include "ecADC.h"
+#include "ecGPIO.h"
+#include "ecTIM.h"
+#include <stdint.h>
+uint32_t result;
+
+//*********************************************Setup에 관한 함수!*********************************************
+void ADC_init(GPIO_TypeDef *port, int pin, int trigmode){  //mode 0 : SW, 1 : TRGO
+// 0. Match Port and Pin for ADC channel	
+	int CHn = ADC_pinmap(port, pin);			// ADC Channel <->Port/Pin mapping
+
+// GPIO configuration ---------------------------------------------------------------------	
+// 1. Initialize GPIO port and pin as ANALOG, no pull up / pull down
+	GPIO_init(port, pin, ANALOG);  				// ANALOG = 3
+	GPIO_pudr(port, pin, NOPULLUPDOWN);  		// EC_NONE = 0
+
+// ADC configuration	---------------------------------------------------------------------			
+// 1. Total time of conversion setting
+	// Enable ADC pheripheral clock
+	RCC->APB2ENR  |= (1<<8); 		// Enable the clock of RCC_APB2ENR_ADC1EN
+	
+	// Configure ADC clock pre-scaler
+	ADC->CCR &= ~(3<<16);					// 0000: PCLK2 divided by 2	(42MHz)
+	
+	// Configure ADC resolution 
+	ADC1->CR1 &= ~(3<<24);     		// 00: 12-bit resolution (15cycle+)
+	
+	// Configure channel sampling time of conversion.	
+	// Software is allowed to write these bits only when ADSTART=0 and JADSTART=0	!!
+	// ADC clock cycles @42MHz = 2us
+	
+	if(CHn < 10){
+		//ADC1->SMPR2  &= ~(7U << 3*(CHn));
+		ADC1->SMPR2  |= 4U << 3*(CHn);					
+	} // sampling time conversion : 84  			
+	else{
+		//ADC1->SMPR1	 &= ~(15U << 3*(CHn - 10));
+		ADC1->SMPR1  |= 4U << 3*(CHn - 10);
+	}				 
+	
+// 2. Regular / Injection Group 
+	//Regular: SQRx, Injection: JSQx
+
+// 3. Repetition: Single or Continuous conversion
+	ADC1->CR2 |= ADC_CR2_CONT;//1<<1;      			// Enable Continuous conversion mode	
+	
+// 4. Single Channel or Scan mode
+	//  - Single Channel: scan mode, right alignment
+	ADC1->CR1 |= 1<<8;						// 1: Scan mode enable  여기는 표에 없음..!
+	ADC1->CR2 &= ~(1<<11);   				// 0: Right alignment	여기는 표에 없음..!
+	// Configure the sequence length
+	ADC1->SQR1 &= ~(15<<20); 				// 0000: 1 conversion in the regular channel conversion sequence
+	
+	// Configure the channel sequence 
+	ADC1->SQR3 &= ~(0x1F << 0);				 	// SQ1 clear bits
+	ADC1->SQR3 |= (CHn & (0x1F << 0)); 	// Choose the channel to convert firstly
+	
+// 5. Interrupt Enable
+	// Enable EOC(conversion) interrupt. 
+	ADC1->CR1 &= ~(1<<5);          	// Interrupt reset
+	ADC1->CR1 |= 1<<5;           // Interrupt enable
+	
+	// Enable ADC_IRQn 
+	NVIC_SetPriority(ADC_IRQn,2); 			// Set Priority to 2
+	NVIC_EnableIRQ(ADC_IRQn);      	// Enable interrupt form ACD1 peripheral	
+
+
+
+/* -------------------------------------------------------------------------------------*/
+//					HW TRIGGER MODE
+/* -------------------------------------------------------------------------------------*/
+	
+	// TRGO Initialize : TIM3, 1msec, RISE edge
+	if(trigmode==TRGO) ADC_TRGO(TIM3, 1, RISE);				
+	
+}
+
+void ADC_TRGO(TIM_TypeDef* TIMx, int msec, int edge){
+	// set timer
+	int timer = 0;
+	if(TIMx==TIM2) timer=2;
+	else if(TIMx==TIM3) timer=3;	
+	
+	// Single conversion mode (disable continuous conversion)
+	ADC1->CR2 &= ~(1<<1);     			// Discontinuous conversion mode
+	ADC1->CR2 |= 1<<10;  					// Enable EOCS
+	
+
+	// HW Trigger configuration -------------------------------------------------------------
+	
+// 1. TIMx Trigger Output Config
+	// Enable TIMx Clock
+	TIM_init(TIMx, msec);
+	TIMx->CR1 &= ~(1<<0); 					//counter disable
+	
+	// Set PSC, ARR
+  TIM_period_ms(TIMx, msec);
+	
+  // Master Mode Selection MMS[2:0]: Trigger output (TRGO)
+  TIMx->CR2 &= ~(7<<4);				// reset MMS
+  TIMx->CR2 |= 4<<4;   				//100: Compare - OC1REF signal is used as trigger output (TRGO)
+   
+	// Output Compare Mode //PWM saengsung
+  TIMx->CCMR1 &= ~(7<<4);       			// OC1M : output compare 1 Mode , clear
+  TIMx->CCMR1 |= 6<<4;          			// OC1M = 110 for compare 1 Mode ch1 , set
+	
+  // OC1 signal 
+  TIMx->CCER |= 1<<0;          // CC1E Capture enabled
+  TIMx->CCR1  = (TIMx->ARR)/2; // duty ratio 50%
+   
+  // Enable TIMx 
+  TIMx->CR1 |= 1<<0; 					//counter enable
+
+// 2. ADC HW Trigger Config.
+	// Select Trigger Source  	 		
+	ADC1->CR2 &= ~ADC_CR2_EXTSEL; 			// reset EXTSEL
+	ADC1->CR2 |= (timer*2+2)<<24; 			// TIMx TRGO event (ADC : TIM2, TIM3 TRGO)
+	
+	//Select Trigger Polarity
+	ADC1->CR2 &= ~ADC_CR2_EXTEN;				// reset EXTEN, default
+	if(edge==RISE) ADC1->CR2 |= ADC_CR2_EXTEN_0;				// trigger detection rising edge
+	else if(edge==FALL) ADC1->CR2 |= ADC_CR2_EXTEN_1;		// trigger detection falling edge
+	else if(edge==BOTH) ADC1->CR2 |= ADC_CR2_EXTEN_Msk;	// trigger detection both edge
+
+}
+// trigger chogihwa and setting end!
+//**********************************************************************************************************
+void ADC_continue(int contmode){
+	if(contmode==CONT){
+		// Repetition: Continuous conversion
+		ADC1->CR2 |= 1<<1;      	// Enable Continuous conversion mode	
+		ADC1->CR1 &= ~ADC_CR1_SCAN;				// 0: Scan mode disable 
+	}
+	else 										//if(contmode==SINGLE)
+		{
+		// Repetition: Single conversion
+		ADC1->CR2 &= ~ADC_CR2_CONT;      		// Disable Continuous conversion mode	
+		ADC1->CR1 |= ADC_CR1_SCAN;				// 1: Scan mode enable
+	}
+} 
+
+void ADC_sequence(int length, int *seq){
+	
+	ADC1->SQR1 &= ~(0xF<<20); 						// reset length of conversions in the regular channel 	
+	ADC1->SQR1 |= (length-1)<<20; 				// conversions in the regular channel conversion sequence
+	
+	for(int i = 0; i<length; i++){ // 채널들의 읽을 순서를 지정해주는 과정
+		if (i<6){
+			ADC1->SQR3 &= ~(0x1F<<i*5);				// SQn clear bits
+			ADC1->SQR3 |= seq[i]<<i*5;				// Choose the channel to convert sequence
+		}
+		else if (i <12){
+			ADC1->SQR2 &= ~(0x1F<<(i-7)*5);				// SQn clear bits
+			ADC1->SQR2 |= seq[i]<<(i-7)*5;				// Choose the channel to convert sequence
+		}
+		else{
+			ADC1->SQR1 &= ~(0x1F<<(i-12)*5);	// SQn clear bits
+			ADC1->SQR1 |= seq[i]<<(i-12)*5;		// Choose the channel to convert sequence
+		}
+	}
+}
+//***************************************이제 시작하고 나서 불러오는 함수들!************************************
+void ADC_start(void){  // ADC 1hangaelasu
+	// Enable ADON, SW Trigger-------------------------------------------------------------------------------
+	ADC1->CR2 |=  ADC_CR2_ADON; //1<<0; // ADON
+	ADC1->CR2 |=  ADC_CR2_SWSTART; //1<<30; // SWSTART = 1
+}
+
+
+uint32_t ADC_read(){
+	return ADC1->DR; // DATA Read
+}
+
+uint32_t is_ADC_EOC(ADC_TypeDef *ADCx){ //ADC->DR가서 읽을 때가 됐다는 뜻, DR가서 읽으면 알아서 clear됨
+	if((ADCx->SR & ADC_SR_EOC) == ADC_SR_EOC){
+		return 1;
+	}else return 0;
+}
+
+uint32_t is_ADC_OVR(void){
+	return (ADC1->SR & (ADC_SR_OVR)==ADC_SR_OVR);
+}
+
+void clear_ADC_OVR(void){
+	ADC1->SR &= ~(1<<5);
+}
+
+uint32_t ADC_pinmap(GPIO_TypeDef *Port, int Pin){ // ADC_init()에서 호출됨! pin에 해당하는 채널 반환
+	if(Port == GPIOA){
+		if(Pin == 0) 			return 0;
+		else if(Pin == 1) return 1;
+		else if(Pin == 4) return 4;
+		else if(Pin == 5) return 5;
+		else if(Pin == 6) return 6;
+		else if(Pin == 7) return 7;
+		else 							while(1);
+	}
+	else if(Port == GPIOB){
+		if(Pin == 0) 			return 8;
+		else if(Pin == 1)	return 9;
+		else 							while(1);
+	}
+	else if(Port == GPIOC){
+		if(Pin == 0)			return 10;
+		else if(Pin == 1)	return 11;
+		else if(Pin == 2)	return 12;
+		else if(Pin == 3)	return 13;
+		else if(Pin == 4)	return 14;
+		else if(Pin == 5)	return 15;
+		else							while(1);
+	}
+}
+
+```
+
