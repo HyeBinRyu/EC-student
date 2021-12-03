@@ -1836,3 +1836,152 @@ uint32_t ADC_pinmap(GPIO_TypeDef *Port, int Pin){ // ADC_init()에서 호출됨!
 
 HW trigger로 TIM을 쓴 경우, CONT가 아닌 SINGLE로 해야한다!!
 
+```c
+#include "myFunc.h"
+#include "String.h"
+// USART2 : MCU to PC via usb 
+// USART1 : Bluetoothmodule to MCU2
+
+#define LEFT 	108 // l
+#define RIGHT   114 // r
+#define UP  	117 // u
+#define DOWN    100 // d
+#define F	    102 // f
+#define B		98  // b
+#define S		115 // s
+
+// 전역변수라서 변수 걱정없이 사용가능
+uint8_t mcu2Data = 0;
+uint8_t pcData = 0;
+int indx =0;
+int maxBuf=10;
+uint8_t buffer[100]={0,};
+int bReceive=0;
+int ledOn = 0;
+int endChar = 13;
+static PWM_t pwm, pwm1;
+int ANGLE = 0;
+int DIR = 0;
+int VEL = 0;
+uint32_t angle = 0;
+uint32_t vel = 0;
+int dir = 0;
+int Key = 0;
+char DIRchar;
+double DUTY;
+
+void setup(void);
+void RCcontrol(void);
+int main(void) {
+	// Initialiization --------------------------------------------------------
+	setup();
+	printf("Hello Nucleo\r\n");
+	
+	// Inifinite Loop ----------------------------------------------------------
+	while (1){
+		// Print
+		printf("ANGLE : %d[deg], DIR : %cWD, VEL : %d[%%] \r\n",angle, DIRchar, vel);
+		delay_ms(500);
+	}
+}
+
+// Initialiization 
+void setup(void)
+{
+	RCC_PLL_init();
+	SysTick_init();
+	// servo pwm pa15
+	// USART congfiguration
+	USART_init(USART2, 38400);
+	USART_begin(USART1, GPIOA,9,GPIOA,10, 9600); 	// PA9 - RXD , PA10 - TXD
+	
+	// Servo Configuration PA15 : TIM2, Ch1
+	PWM_init(&pwm, GPIOA, 15);
+	PWM_period_ms(&pwm, 20);
+	PWM_pulsewidth_ms(&pwm, 1.5);
+	
+	// DC Motor Configuration PB3 : TIM2, Ch2, same TIM should have same period_ms
+	PWM_init(&pwm1, GPIOB, 3);
+	PWM_period_ms(&pwm1, 20);
+	PWM_duty(&pwm1, 0.0);
+	GPIO_init(GPIOA, 5, OUTPUT);
+}
+
+void RCcontrol(void){
+		if(bReceive==1){
+			Key = buffer[0];
+		// Count
+		switch(Key){
+			case LEFT:  ANGLE++; break;
+			case RIGHT: ANGLE--; break;
+			case UP:    VEL++; break;
+			case DOWN:  VEL--; break;
+			case F:     DIR = 1; break;
+			case B:     DIR = 0; break;
+			case S:     VEL = 0; ANGLE = 0; break;
+		}
+		bReceive = 0;
+	}
+		
+		// saturation
+		if (ANGLE > 2) ANGLE = 2;
+		else if(ANGLE < -2) ANGLE = -2;
+		
+		if (VEL > 4) VEL = 4;
+		else if(VEL < 0) VEL = 0;
+
+		// Command
+		// servo
+		PWM_pulsewidth_ms(&pwm, 1.5 + ANGLE * 0.5);	// count = -2 ~ 2
+		angle = ANGLE * 45 + 90;
+		
+		// DC motor
+	  if (DIR)	{
+			DIRchar = 'F';
+			GPIO_write(GPIOA, 5, DIR);
+			DUTY = 1 - 0.25 * VEL; // 1(HIGH) - duty 로 속도가 계산됨 ex) HIGH & VEL=25%면 75% 속도 출력
+			PWM_duty(&pwm1,DUTY);
+		}
+		else	{
+			DIRchar = 'B';
+			GPIO_write(GPIOA, 5, DIR);
+			DUTY = 0.25 * VEL;     // 0(LOW)라서 -0.25*VEL로 계산되고 생각되로 출력되는 거임.
+		}
+		
+		PWM_duty(&pwm1,DUTY);
+		vel = VEL * 25;
+}
+
+void USART1_IRQHandler(){		//USART1 INT uu
+	if(is_USART_RXNE(USART1)){
+		mcu2Data = USART_getc(USART1);						
+		if(mcu2Data==endChar) {
+			bReceive=1;
+			indx = 0;
+		}
+		else{
+			if(indx>maxBuf){
+				indx =0;
+				memset(buffer, 0, sizeof(char) * maxBuf);
+				printf("ERROR : Too long string\r\n");
+			}
+			buffer[indx] = mcu2Data;
+			indx++;
+		}
+		RCcontrol();
+	}
+}
+
+void USART2_IRQHandler(){		//USART2 INT 
+	if(is_USART_RXNE(USART2)){
+		pcData = USART_getc(USART2);
+		USART_write(USART1,&pcData,1);	// transmit char to USART1
+		printf("%c",pcData); 						// echo to sender(pc)
+		
+		if(pcData==endChar){
+			printf("\r\n"); 							// to change line on PC display
+		}
+	}
+}
+```
+
